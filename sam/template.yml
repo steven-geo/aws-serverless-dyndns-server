@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AWS SAM template with a simple API definition
+
+# Dyndns hosting is on the same domain as clients
+
+Parameters:
+  LogRetention:
+    Type: Number
+    AllowedValues:
+      - 1
+      - 3
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 180
+      - 365
+    Default: 90
+    Description: Length of time (in days) to retain log files. Must be a Valid CloudWatch retention period.
+  DDNSdomainName:
+    Type: String
+    Description: The FQDN that the DynDNS service will be published out on.
+  HostedzoneName:
+    Type: String
+    Description: Route53 ZoneName for Certificate
+  HostedzoneId:
+    Type: String
+    Description: Route53 ZoneID for Certificate and DNS Entries
+
+Resources:
+  LogGroup:
+    Type: "AWS::Logs::LogGroup"
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ApiFunction}"
+      RetentionInDays: !Ref LogRetention
+
+  ApiGatewayCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DDNSdomainName
+      CertificateTransparencyLoggingPreference: ENABLED
+      DomainValidationOptions:
+        - DomainName: !Sub "${HostedzoneName}"
+          HostedZoneId: !Sub "${HostedzoneId}"
+      ValidationMethod: DNS
+
+  ApiGatewayApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Domain:
+        BasePath: '/'
+        CertificateArn: !Ref ApiGatewayCertificate
+        DomainName: !Ref DDNSdomainName
+        Route53:
+          HostedZoneId: !Ref HostedzoneId
+          IpV6: true  # Not IPv6 currently not supported with custom DomainName Nov2020
+        SecurityPolicy: TLS_1_2
+
+  ApiFunction: # Adds a GET api endpoint at "/" to the ApiGatewayApi via an Api event
+    Type: AWS::Serverless::Function
+    Properties:
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /nic/update
+            Method: get
+            RestApiId:
+              Ref: ApiGatewayApi
+      Runtime: python3.7
+      Handler: lambda_function.handler
+      CodeUri: dyndns-function/
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          DBNAME: !Ref DBTable
+          HOSTZONEID: !Ref HostedzoneId
+      Policies:  # AWSLambdaBasicExecutionRole added automatically
+        - Statement:
+          - Sid: 'DynamoDB'
+            Effect: 'Allow'
+            Action:
+              - 'dynamodb:GetItem'
+            Resource:
+              - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DBTable}
+              - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DBTable}/*
+          - Sid: 'Route53'
+            Effect: 'Allow'
+            Action:
+              - 'route53:ChangeResourceRecordSets'
+            Resource: !Sub arn:aws:route53:::hostedzone/${HostedzoneId}
+
+  DBTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: 'user'
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      SSESpecification:
+        SSEEnabled: true
+      TableName: !Sub "${AWS::StackName}-db"
