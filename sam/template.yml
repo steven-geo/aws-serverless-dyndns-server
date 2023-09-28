@@ -72,7 +72,7 @@ Resources:
             Method: get
             RestApiId:
               Ref: ApiGatewayApi
-      Runtime: python3.7
+      Runtime: python3.11
       Handler: lambda_function.handler
       CodeUri: dyndns-function/
       MemorySize: 128
